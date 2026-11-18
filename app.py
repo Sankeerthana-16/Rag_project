@@ -15,7 +15,7 @@ st.set_page_config(page_title="RAG Document Assistant", layout="wide")
 st.title("📄 RAG Document Assistant")
 st.write("Upload a PDF to ask questions about it, or query the default document (*Attention Is All You Need*).")
 
-uploaded_file = st.file_uploader("Upload your PDF", type=["pdf"])
+uploaded_files = st.file_uploader("Upload PDF files", type=["pdf"], accept_multiple_files=True)
 
 # Load default models and vector store
 @st.cache_resource
@@ -28,37 +28,92 @@ model, default_index, default_chunks = load_resources()
 
 # Cache processing of uploaded PDFs
 @st.cache_resource
-def process_uploaded_pdf(file_bytes, filename):
-    doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-    pages_text = []
-    for page in doc:
-        text = page.get_text("text").strip()
-        if text:
-            pages_text.append(text)
-    doc.close()
+def process_multiple_pdfs(file_data, filenames):
 
-    full_text = "\n".join(pages_text)
-    if not full_text.strip():
+    all_chunks = []
+
+    for file_bytes, filename in zip(file_data, filenames):
+
+        doc = pymupdf.open(
+            stream=file_bytes,
+            filetype="pdf"
+        )
+
+        pages_text = []
+
+        for page in doc:
+            text = page.get_text("text").strip()
+
+            if text:
+                pages_text.append(text)
+
+        doc.close()
+
+        full_text = "\n".join(pages_text)
+
+        if not full_text.strip():
+            continue
+
+        chunks = split_text(full_text)
+
+        all_chunks.extend(chunks)
+
+    if not all_chunks:
         return None, []
 
-    chunks = split_text(full_text)
-    embeddings = create_embeddings(chunks, model)
-    embeddings = np.array(embeddings, dtype="float32")
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings)
-    return index, chunks
+    embeddings = create_embeddings(
+        all_chunks,
+        model
+    )
 
-if uploaded_file is not None:
-    with st.spinner("Processing uploaded PDF..."):
-        active_index, active_chunks = process_uploaded_pdf(uploaded_file.getvalue(), uploaded_file.name)
+    embeddings = np.array(
+        embeddings,
+        dtype="float32"
+    )
+
+    dimension = embeddings.shape[1]
+
+    index = faiss.IndexFlatL2(dimension)
+
+    index.add(embeddings)
+
+    return index, all_chunks
+
+if uploaded_files:
+
+    file_data = tuple(
+        file.getvalue()
+        for file in uploaded_files
+    )
+
+    filenames = tuple(
+        file.name
+        for file in uploaded_files
+    )
+
+    with st.spinner("Processing documents..."):
+
+        active_index, active_chunks = process_multiple_pdfs(
+            file_data,
+            filenames
+        )
+
     if active_index is None or not active_chunks:
-        st.error("Could not extract any text from the uploaded PDF. Please make sure it contains selectable text.")
-        active_index, active_chunks = default_index, default_chunks
+        st.error("No readable text found in uploaded PDFs. Please ensure they contain selectable text.")
+        active_index = default_index
+        active_chunks = default_chunks
+        st.info("Falling back to default document: *Attention Is All You Need*")
     else:
-        st.success(f"Loaded '{uploaded_file.name}' with {len(active_chunks)} chunks.")
+        st.success(
+            f"Successfully processed {len(uploaded_files)} document(s) with {len(active_chunks)} chunks!"
+        )
+        st.subheader("Uploaded Documents")
+        for filename in filenames:
+            st.write(f"📄 {filename}")
+
 else:
-    active_index, active_chunks = default_index, default_chunks
+    active_index = default_index
+    active_chunks = default_chunks
     st.info("Currently using default document: *Attention Is All You Need*")
 
 # User question
